@@ -6,6 +6,7 @@ Responsive print request and classroom setup collaboration portal built with Goo
 
 - Dashboard with request counts, upcoming deadlines, and room distribution.
 - Request form for J103, J101A, J101B, J104（系辦教室）, and 其他, with separate production notes, final artwork link, and optional reference example link.
+- Users can add a custom room/location from the request form; saved locations are added to Settings and appear for future requests.
 - Search and status/room filters, due date schedule, Google Drive artwork links.
 - Admin review queue, approve/reject decisions, and append-only review history.
 - Server-side authorization: only `usc1125520@g2.usc.edu.tw` can review requests.

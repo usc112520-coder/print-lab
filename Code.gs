@@ -14,7 +14,7 @@ const APP = {
 
 function doGet() {
   return HtmlService.createHtmlOutputFromFile('Index')
-    .setTitle('PRINT LAB｜印刷輸出管理')
+    .setTitle('數遊系印務設計需求系統')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
@@ -67,7 +67,7 @@ function getBootstrap() {
   const user = currentUser_();
   const requests = readRows_('Requests');
   const own = user.isAdmin ? requests : requests.filter(r => String(r.requesterEmail).toLowerCase() === user.email);
-  return { user, rooms: APP.rooms, statuses: APP.statuses, requests: own, isAdmin: user.isAdmin };
+  return { user, rooms: getRooms_(), statuses: APP.statuses, requests: own, isAdmin: user.isAdmin };
 }
 
 function listRequests(filters) {
@@ -89,6 +89,7 @@ function createRequest(payload) {
   const p = validateRequest_(payload);
   const lock = LockService.getScriptLock(); lock.waitLock(10000);
   try {
+    saveRoom_(p.room);
     const now = new Date().toISOString();
     const id = 'PL-' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyMMdd') + '-' + Utilities.getUuid().slice(0,5).toUpperCase();
     appendObject_('Requests', { id, createdAt:now, updatedAt:now, requesterEmail:user.email, requesterName:safe_(p.requesterName,80), room:p.room, title:safe_(p.title,120), category:safe_(p.category,60), size:safe_(p.size,80), quantity:p.quantity, neededBy:p.neededBy, deadline:p.deadline, description:safe_(p.description,1000), driveUrl:p.driveUrl, referenceUrl:p.referenceUrl, status:'待審核', reviewNote:'', reviewedBy:'', reviewedAt:'' });
@@ -130,10 +131,10 @@ function getReviewHistory(requestId) {
 
 function validateRequest_(p) {
   p = p || {};
-  const room = String(p.room || '');
+  const room = safe_(p.room || '', 80);
   const title = String(p.title || '').trim();
   const quantity = Number(p.quantity);
-  if (!APP.rooms.includes(room)) throw new Error('請選擇有效的教室。');
+  if (!room || room === '__add__') throw new Error('請選擇或新增使用地點。');
   if (!title) throw new Error('請填寫需求名稱。');
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10000) throw new Error('數量需為 1 至 10,000 的整數。');
   const driveUrl = String(p.driveUrl || '').trim();
@@ -152,6 +153,28 @@ function readRows_(name) {
   return values.filter(row => row.some(v => v !== '')).map(row => {
     const obj = {}; headers.forEach((h,i) => obj[h] = row[i] instanceof Date ? Utilities.formatDate(row[i], Session.getScriptTimeZone(), "yyyy-MM-dd'T'HH:mm:ss") : row[i]); return obj;
   });
+}
+
+function getRooms_() {
+  const setting = readRows_('Settings').find(row => row.key === 'rooms');
+  let saved = [];
+  try { saved = setting ? JSON.parse(String(setting.value || '[]')) : []; } catch (e) {}
+  if (!Array.isArray(saved)) saved = [];
+  return [...new Set([...APP.rooms, ...saved.map(value => safe_(value, 80)).filter(Boolean)])];
+}
+
+function saveRoom_(room) {
+  if (APP.rooms.includes(room)) return;
+  const sheet = getDatabase_().getSheetByName('Settings');
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0].map(String);
+  const keyCol = headers.indexOf('key');
+  const valueCol = headers.indexOf('value');
+  const settingRow = values.findIndex((row, index) => index > 0 && row[keyCol] === 'rooms');
+  const rooms = getRooms_();
+  if (!rooms.includes(room)) rooms.push(room);
+  if (settingRow < 1) appendObject_('Settings', { key: 'rooms', value: JSON.stringify(rooms) });
+  else sheet.getRange(settingRow + 1, valueCol + 1).setValue(JSON.stringify(rooms));
 }
 
 function appendObject_(name, obj) {
