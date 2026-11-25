@@ -3,9 +3,14 @@ const APP = {
   adminEmail: 'usc1125520@g2.usc.edu.tw',
   rooms: ['J103', 'J101A', 'J101B', 'J104（系辦教室）', '其他'],
   statuses: ['待審核', '待製作', '製作中', '待取件', '已完成', '退件'],
+  sheetNames: {
+    Requests: '印務需求', ReviewLogs: '審核紀錄', ArtworkFiles: '完稿檔案',
+    Users: '使用者', Settings: '系統設定', Notifications: '通知紀錄'
+  },
   sheets: {
-    Requests: ['id','createdAt','updatedAt','requesterEmail','requesterName','room','title','category','size','quantity','neededBy','deadline','description','driveUrl','referenceUrl','status','reviewNote','reviewedBy','reviewedAt'],
+    Requests: ['id','createdAt','updatedAt','requesterEmail','requesterName','room','title','category','size','quantity','neededBy','deadline','description','driveUrl','referenceUrl','productionArtworkUrl','status','reviewNote','reviewedBy','reviewedAt'],
     ReviewLogs: ['id','requestId','at','reviewer','action','note'],
+    ArtworkFiles: ['id','requestId','fileId','fileName','mimeType','size','version','uploadedBy','uploadedAt','driveUrl'],
     Users: ['email','name','role','active'],
     Settings: ['key','value'],
     Notifications: ['id','requestId','at','recipient','kind','sent']
@@ -23,8 +28,11 @@ function initializeDatabase() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   if (!ss) throw new Error('請先在 PRINT LAB 資料庫試算表中開啟 Apps Script，再執行初始化。');
   PropertiesService.getScriptProperties().setProperty('DATABASE_ID', ss.getId());
-  Object.entries(APP.sheets).forEach(([name, headers]) => {
+  Object.entries(APP.sheets).forEach(([key, headers]) => {
+    const name = APP.sheetNames[key];
     let sheet = ss.getSheetByName(name);
+    const legacySheet = ss.getSheetByName(key);
+    if (!sheet && legacySheet) { legacySheet.setName(name); sheet = legacySheet; }
     if (!sheet) sheet = ss.insertSheet(name);
     if (sheet.getLastRow() === 0) sheet.appendRow(headers);
     else {
@@ -34,9 +42,9 @@ function initializeDatabase() {
     }
     sheet.setFrozenRows(1);
   });
-  const users = ss.getSheetByName('Users');
+  const users = ss.getSheetByName(APP.sheetNames.Users);
   if (users.getLastRow() < 2) users.appendRow([APP.adminEmail, 'PRINT LAB 管理員', 'admin', true]);
-  const settings = ss.getSheetByName('Settings');
+  const settings = ss.getSheetByName(APP.sheetNames.Settings);
   if (settings.getLastRow() < 2) {
     settings.appendRow(['rooms', JSON.stringify(APP.rooms)]);
     settings.appendRow(['statuses', JSON.stringify(APP.statuses)]);
@@ -50,9 +58,17 @@ function getDatabase_() {
   return SpreadsheetApp.openById(id);
 }
 
+function getSheet_(key) {
+  const name = APP.sheetNames[key];
+  if (!name) throw new Error('未知的資料分類：' + key);
+  const sheet = getDatabase_().getSheetByName(name);
+  if (!sheet) throw new Error('找不到工作表「' + name + '」，請先執行 initializeDatabase()。');
+  return sheet;
+}
+
 function currentUser_() {
   const email = String(Session.getActiveUser().getEmail() || '').trim().toLowerCase();
-  if (!email) throw new Error('無法確認登入帳號。請使用 Google 帳號重新開啟，並確認 Apps Script 網頁應用程式存取設定。');
+  if (!email) return { email: '', isAdmin: false };
   const admin = email === APP.adminEmail;
   return { email, isAdmin: admin };
 }
@@ -63,18 +79,28 @@ function requireAdmin_() {
   return user;
 }
 
+function requirePrintStaff_() {
+  const user = currentUser_();
+  const isStaff = readRows_('Users').some(row => {
+    const email = String(row.email || '').trim().toLowerCase();
+    const role = String(row.role || '').trim().toLowerCase();
+    const active = row.active === true || String(row.active || '').trim().toUpperCase() === 'TRUE';
+    return active && email === user.email && ['designer', 'print_staff', '設計人員', '印務人員'].includes(role);
+  });
+  if (!isStaff && !user.isAdmin) throw new Error('只有已啟用的印務／設計人員可以上傳完稿。');
+  return user;
+}
+
 function getBootstrap() {
   const user = currentUser_();
   const requests = readRows_('Requests');
-  const own = user.isAdmin ? requests : requests.filter(r => String(r.requesterEmail).toLowerCase() === user.email);
-  return { user, rooms: getRooms_(), statuses: APP.statuses, requests: own, isAdmin: user.isAdmin };
+  return { user, rooms: getRooms_(), statuses: APP.statuses, requests, isAdmin: user.isAdmin };
 }
 
 function listRequests(filters) {
   const user = currentUser_();
   const f = filters || {};
   let rows = readRows_('Requests');
-  if (!user.isAdmin) rows = rows.filter(r => String(r.requesterEmail).toLowerCase() === user.email);
   if (f.room) rows = rows.filter(r => r.room === f.room);
   if (f.status) rows = rows.filter(r => r.status === f.status);
   if (f.query) {
@@ -87,13 +113,14 @@ function listRequests(filters) {
 function createRequest(payload) {
   const user = currentUser_();
   const p = validateRequest_(payload);
+  const requesterEmail = user.email || p.requesterEmail;
   const lock = LockService.getScriptLock(); lock.waitLock(10000);
   try {
     saveRoom_(p.room);
     const now = new Date().toISOString();
     const id = 'PL-' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyMMdd') + '-' + Utilities.getUuid().slice(0,5).toUpperCase();
-    appendObject_('Requests', { id, createdAt:now, updatedAt:now, requesterEmail:user.email, requesterName:safe_(p.requesterName,80), room:p.room, title:safe_(p.title,120), category:safe_(p.category,60), size:safe_(p.size,80), quantity:p.quantity, neededBy:p.neededBy, deadline:p.deadline, description:safe_(p.description,1000), driveUrl:p.driveUrl, referenceUrl:p.referenceUrl, status:'待審核', reviewNote:'', reviewedBy:'', reviewedAt:'' });
-    logReview_(id, user.email, '提交需求', '');
+    appendObject_('Requests', { id, createdAt:now, updatedAt:now, requesterEmail, requesterName:safe_(p.requesterName,80), room:p.room, title:safe_(p.title,120), category:safe_(p.category,60), size:safe_(p.size,80), quantity:p.quantity, neededBy:p.neededBy, deadline:p.deadline, description:safe_(p.description,1000), driveUrl:p.driveUrl, referenceUrl:p.referenceUrl, productionArtworkUrl:'', status:'待審核', reviewNote:'', reviewedBy:'', reviewedAt:'' });
+    logReview_(id, requesterEmail, '提交需求', '');
     return { ok:true, id };
   } finally { lock.releaseLock(); }
 }
@@ -105,7 +132,7 @@ function reviewRequest(payload) {
   if (!['approve','reject','status'].includes(action)) throw new Error('無效的審核動作。');
   const lock = LockService.getScriptLock(); lock.waitLock(10000);
   try {
-    const sheet = getDatabase_().getSheetByName('Requests');
+    const sheet = getSheet_('Requests');
     const rows = sheet.getDataRange().getValues();
     const headers = rows[0]; const idCol = headers.indexOf('id');
     const idx = rows.findIndex((r,i) => i > 0 && String(r[idCol]) === String(p.id));
@@ -129,6 +156,86 @@ function getReviewHistory(requestId) {
   return readRows_('ReviewLogs').filter(r => String(r.requestId) === String(requestId)).sort((a,b) => String(a.at).localeCompare(String(b.at)));
 }
 
+/** Save the final artwork link added by print staff after a request is submitted. */
+function saveProductionArtwork(payload) {
+  const admin = requireAdmin_();
+  const p = payload || {};
+  const url = String(p.url || '').trim();
+  if (url && !/^https:\/\/(drive|docs)\.google\.com\//.test(url)) throw new Error('完稿連結請使用 Google Drive 或 Google 文件網址。');
+  const lock = LockService.getScriptLock(); lock.waitLock(10000);
+  try {
+    const sheet = getSheet_('Requests');
+    const values = sheet.getDataRange().getValues();
+    const headers = values[0].map(String);
+    const idCol = headers.indexOf('id');
+    const linkCol = headers.indexOf('productionArtworkUrl');
+    if (linkCol < 0) {
+      const newCol = headers.length + 1;
+      sheet.getRange(1, newCol).setValue('productionArtworkUrl');
+      headers.push('productionArtworkUrl');
+    }
+    const rowIndex = values.findIndex((row, i) => i > 0 && String(row[idCol]) === String(p.id));
+    if (rowIndex < 1) throw new Error('找不到這筆需求。');
+    sheet.getRange(rowIndex + 1, headers.indexOf('productionArtworkUrl') + 1).setValue(url);
+    const updatedCol = headers.indexOf('updatedAt');
+    if (updatedCol >= 0) sheet.getRange(rowIndex + 1, updatedCol + 1).setValue(new Date().toISOString());
+    logReview_(String(p.id), admin.email, url ? '印務人員上傳完稿' : '移除印務人員完稿連結', '');
+    return { ok:true };
+  } finally { lock.releaseLock(); }
+}
+
+/** Upload a new artwork version. Active print/design staff can edit; requester and admin can view. */
+function uploadProductionArtwork(form) {
+  const user = requirePrintStaff_();
+  const requestId = safe_(form && form.requestId, 100);
+  const blob = form && form.artworkFile;
+  if (!requestId || !blob || !blob.getBytes) throw new Error('請選擇完稿檔案。');
+  const bytes = blob.getBytes();
+  if (!bytes.length || bytes.length > 15 * 1024 * 1024) throw new Error('檔案大小需介於 1 byte 至 15 MB。');
+  const originalName = safe_(blob.getName() || 'artwork', 140);
+  const extension = (originalName.match(/\.([a-z0-9]{1,8})$/i) || [,''])[1].toLowerCase();
+  const allowed = ['pdf','png','jpg','jpeg','svg','ai','psd'];
+  if (!allowed.includes(extension)) throw new Error('目前接受 PDF、PNG、JPG、SVG、AI、PSD 檔案。');
+  const request = readRows_('Requests').find(row => String(row.id) === requestId);
+  if (!request) throw new Error('找不到這筆需求。');
+
+  const props = PropertiesService.getUserProperties();
+  let folder;
+  const folderId = props.getProperty('PRINT_LAB_ARTWORK_FOLDER_ID');
+  if (folderId) { try { folder = DriveApp.getFolderById(folderId); } catch (e) {} }
+  if (!folder) {
+    folder = DriveApp.createFolder('PRINT LAB 完稿上傳');
+    props.setProperty('PRINT_LAB_ARTWORK_FOLDER_ID', folder.getId());
+  }
+  const version = readRows_('ArtworkFiles').filter(row => String(row.requestId) === requestId).length + 1;
+  const fileName = `${requestId}_v${version}_${originalName}`;
+  const file = folder.createFile(blob.setName(fileName));
+  const recipients = [...new Set([String(request.requesterEmail || '').trim().toLowerCase(), APP.adminEmail].filter(email => email && email !== user.email))];
+  const shareWarnings = [];
+  recipients.forEach(email => { try { file.addViewer(email); } catch (e) { shareWarnings.push(email); } });
+  const staffEditors = [...new Set(readRows_('Users')
+    .filter(row => {
+      const role = String(row.role || '').trim().toLowerCase();
+      const active = row.active === true || String(row.active || '').trim().toUpperCase() === 'TRUE';
+      return active && ['designer', 'print_staff', '設計人員', '印務人員'].includes(role);
+    })
+    .map(row => String(row.email || '').trim().toLowerCase())
+    .filter(email => email && email !== user.email && email !== APP.adminEmail && !recipients.includes(email)))];
+  staffEditors.forEach(email => { try { file.addEditor(email); } catch (e) { shareWarnings.push(email); } });
+
+  const now = new Date().toISOString();
+  appendObject_('ArtworkFiles', { id:Utilities.getUuid(), requestId, fileId:file.getId(), fileName, mimeType:blob.getContentType(), size:bytes.length, version, uploadedBy:user.email, uploadedAt:now, driveUrl:file.getUrl() });
+  const requestSheet = getSheet_('Requests');
+  const headers = requestSheet.getRange(1, 1, 1, requestSheet.getLastColumn()).getValues()[0].map(String);
+  const rowNumber = requestSheet.getDataRange().getValues().findIndex((row, index) => index > 0 && String(row[headers.indexOf('id')]) === requestId) + 1;
+  if (rowNumber > 1) {
+    requestSheet.getRange(rowNumber, headers.indexOf('productionArtworkUrl') + 1).setValue(file.getUrl());
+    requestSheet.getRange(rowNumber, headers.indexOf('updatedAt') + 1).setValue(now);
+  }
+  logReview_(requestId, user.email, '印務人員上傳完稿 v' + version, shareWarnings.length ? '檔案分享未能自動完成：' + shareWarnings.join(', ') : '');
+  return { ok:true, fileName, version, shareWarnings };
+}
+
 function validateRequest_(p) {
   p = p || {};
   const room = safe_(p.room || '', 80);
@@ -141,13 +248,16 @@ function validateRequest_(p) {
   if (driveUrl && !/^https:\/\/(drive|docs)\.google\.com\//.test(driveUrl)) throw new Error('檔案連結請使用 Google Drive 或 Google 文件網址。');
   const referenceUrl = String(p.referenceUrl || '').trim();
   if (referenceUrl && !/^https:\/\/(drive|docs)\.google\.com\//.test(referenceUrl)) throw new Error('參考範例請使用 Google Drive 或 Google 文件網址。');
+  const activeEmail = String(Session.getActiveUser().getEmail() || '').trim().toLowerCase();
+  const requesterEmail = activeEmail || String(p.requesterEmail || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(requesterEmail)) throw new Error('請填寫有效的聯絡 Email。');
   const neededBy = String(p.neededBy || ''); const deadline = String(p.deadline || '');
   if (!neededBy || !deadline) throw new Error('請填寫需求日期與交件期限。');
-  return { ...p, room, title, quantity, neededBy, deadline, driveUrl, referenceUrl };
+  return { ...p, requesterEmail, room, title, quantity, neededBy, deadline, driveUrl, referenceUrl };
 }
 
 function readRows_(name) {
-  const sheet = getDatabase_().getSheetByName(name);
+  const sheet = getSheet_(name);
   if (!sheet || sheet.getLastRow() < 2) return [];
   const values = sheet.getDataRange().getValues(); const headers = values.shift();
   return values.filter(row => row.some(v => v !== '')).map(row => {
@@ -165,7 +275,7 @@ function getRooms_() {
 
 function saveRoom_(room) {
   if (APP.rooms.includes(room)) return;
-  const sheet = getDatabase_().getSheetByName('Settings');
+  const sheet = getSheet_('Settings');
   const values = sheet.getDataRange().getValues();
   const headers = values[0].map(String);
   const keyCol = headers.indexOf('key');
@@ -178,14 +288,16 @@ function saveRoom_(room) {
 }
 
 function appendObject_(name, obj) {
-  const sheet = getDatabase_().getSheetByName(name); const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
+  const sheet = getSheet_(name); const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
   sheet.appendRow(headers.map(h => obj[h] === undefined ? '' : obj[h]));
 }
 function writeObjectAt_(name, rowNumber, obj) {
-  const sheet = getDatabase_().getSheetByName(name); const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
+  const sheet = getSheet_(name); const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
   sheet.getRange(rowNumber, 1, 1, headers.length).setValues([headers.map(h => obj[h] === undefined ? '' : obj[h])]);
 }
 function logReview_(requestId, reviewer, action, note) {
   appendObject_('ReviewLogs', { id:Utilities.getUuid(), requestId, at:new Date().toISOString(), reviewer, action, note });
 }
 function safe_(value, max) { return String(value || '').trim().replace(/[<>]/g, '').slice(0, max); }
+
+
