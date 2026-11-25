@@ -16,12 +16,12 @@ Responsive print request and classroom setup collaboration portal built with Goo
 1. Create a private Google spreadsheet named `PRINT LAB｜印刷輸出管理資料庫` in the account that will own the service.
 2. From that spreadsheet choose **Extensions → Apps Script**. Add `Code.gs` and `Index.html` from this repository, and add the `appsscript.json` manifest (enable **Show "appsscript.json" manifest file** in Project Settings if needed).
 3. In Project Settings, set the time zone to `Asia/Taipei`. Run `initializeDatabase` once and approve the requested Sheets permissions. Confirm the five tabs appear. The spreadsheet ID is stored in Script Properties; it is not committed to GitHub.
-4. In **Deploy → New deployment → Web app**, choose **Execute as: User accessing the web app** and restrict access to the intended audience. Share the private database spreadsheet with the people who need to use the app, with the minimum Google Sheets role they need.
+4. In **Deploy → New deployment → Web app**, choose **Execute as: User accessing the web app** and restrict access to the intended audience. Every user must have spreadsheet access for writes to work in this mode.
 5. Deploy and open the `/exec` URL while signed into Google. Authorize the app on first use.
 
 ### Mixed Workspace and personal Gmail accounts
 
-Apps Script's `Session.getActiveUser().getEmail()` can be blank in some web-app deployment and cross-domain contexts. The server deliberately fails closed when it cannot identify an account. Deploying as the accessing user generally makes the signed-in Google account available, but each user may be asked to authorize Apps Script and must have the spreadsheet permissions required by that execution model. A school Workspace administrator can also restrict web apps or OAuth scopes. Verify the exact deployment with both a school account and a personal Gmail before sharing broadly. If either account type returns a blank email or cannot access the sheet without exposing it, use a separately configured Google Identity Services login with server-side ID-token verification; do not substitute a client-side email field or trust an email supplied by the browser.
+Apps Script's `Session.getActiveUser().getEmail()` can be blank in some web-app deployment and cross-domain contexts. The server deliberately fails closed when it cannot identify an account. Deploying as the accessing user generally makes the signed-in Google account available, but each user may be asked to authorize Apps Script and must have spreadsheet access. This also lets collaborators open and edit the underlying sheet directly: the interface's own-request filter does not provide row-level privacy or prevent direct edits. Use this mode only if every collaborator is trusted with the complete dataset. A school Workspace administrator can also restrict web apps or OAuth scopes. Verify both a school account and a personal Gmail before sharing broadly. For an owner-only sheet and private rows, a supported Google Identity Services login with server-side ID-token verification must be configured before deployment; do not substitute a client-side email field or trust an email supplied by the browser.
 
 The administrator check is performed in server-side Apps Script on each review operation. Hiding the review page in the UI is only a convenience and is not the security boundary.
 
@@ -30,7 +30,7 @@ The administrator check is performed in server-side Apps Script on each review o
 - Keep the spreadsheet private and share it only with intended users.
 - Store artwork in Google Drive and paste its link into a request. Link access still follows the Drive file's own sharing settings.
 - The repository is public. Never commit spreadsheet IDs, OAuth client secrets, private request data, or exported production data.
-- Users can read their own requests; the configured administrator can read and review all requests. Review log entries are added by the server for create/review actions.
+- The interface filters collaborators to their own requests and gives the configured administrator an all-request view. This is application behavior only: collaborators with sheet access can see and modify the underlying sheet directly. Review logs are appended by app actions but are not tamper-proof against sheet editors.
 
 ## Deploy updates with clasp (optional)
 
@@ -42,4 +42,4 @@ Apps Script has per-account execution, runtime, and email quotas that Google may
 
 ## Workflow
 
-`待審核 → 待製作 → 製作中 → 待取件 → 已完成`; rejected requests are marked `退件`. In this release the admin can approve/reject; subsequent production status updates are prepared in the API and may be exposed in a dedicated admin workflow in a later iteration.
+`待審核 → 待製作 → 製作中 → 待取件 → 已完成`; rejected requests are marked `退件`. The administrator can approve/reject and update production status from the review history view.
