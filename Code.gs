@@ -66,21 +66,63 @@ function getSheet_(key) {
   return sheet;
 }
 
-function currentUser_() {
-  const email = String(Session.getActiveUser().getEmail() || '').trim().toLowerCase();
-  if (!email) return { email: '', isAdmin: false };
-  const admin = email === APP.adminEmail;
-  return { email, isAdmin: admin };
+function isActiveUser_(email, roles) {
+  if (!email) return false;
+  const accepted = roles.map(role => String(role).trim().toLowerCase());
+  return readRows_('Users').some(row => {
+    const rowEmail = String(row.email || '').trim().toLowerCase();
+    const role = String(row.role || '').trim().toLowerCase();
+    const active = row.active === true || String(row.active || '').trim().toUpperCase() === 'TRUE';
+    return active && rowEmail === email && accepted.includes(role);
+  });
 }
-
-function requireAdmin_() {
-  const user = currentUser_();
-  if (!user.isAdmin) throw new Error('只有管理員可以執行此操作。');
+function adminTokenKey_(token) {
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(token || ''));
+  return 'PRINTLAB_ADMIN_' + bytes.map(b => ('0' + (b & 255).toString(16)).slice(-2)).join('');
+}
+function adminSessionEmail_(token) {
+  if (!token) return '';
+  const email = CacheService.getScriptCache().get(adminTokenKey_(token));
+  return email && isActiveUser_(email, ['admin','管理員','designer','print_staff','設計人員','印務人員']) ? email : '';
+}
+function requestAdminLoginCode(email) {
+  email = String(email || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('請輸入有效的 Email。');
+  const cache = CacheService.getScriptCache(), rateKey = 'PRINTLAB_ADMIN_RATE_' + adminTokenKey_(email);
+  if (cache.get(rateKey)) return { ok:true };
+  cache.put(rateKey, '1', 60);
+  if (!isActiveUser_(email, ['admin','管理員','designer','print_staff','設計人員','印務人員'])) return { ok:true };
+  const seed = Utilities.getUuid().replace(/-/g, '');
+  const code = String(parseInt(seed.slice(0, 8), 16) % 900000 + 100000);
+  cache.put('PRINTLAB_ADMIN_OTP_' + adminTokenKey_(email), code, 300);
+  MailApp.sendEmail(email, '數遊系印務設計需求系統｜登入驗證碼', '登入驗證碼：' + code + '\n\n5 分鐘內有效。若非本人操作請忽略此信。');
+  return { ok:true };
+}
+function verifyAdminLoginCode(email, code) {
+  email = String(email || '').trim().toLowerCase(); code = String(code || '').trim();
+  const cache = CacheService.getScriptCache(), key = adminTokenKey_(email);
+  const stored = cache.get('PRINTLAB_ADMIN_OTP_' + key), triesKey = 'PRINTLAB_ADMIN_TRIES_' + key, tries = Number(cache.get(triesKey) || 0);
+  if (!stored || tries >= 5 || stored !== code || !isActiveUser_(email, ['admin','管理員','designer','print_staff','設計人員','印務人員'])) {
+    cache.put(triesKey, String(tries + 1), 300); throw new Error('驗證碼錯誤或已逾期，請重新取得。');
+  }
+  cache.remove('PRINTLAB_ADMIN_OTP_' + key); cache.remove(triesKey);
+  const token = Utilities.getUuid() + Utilities.getUuid();
+  cache.put(adminTokenKey_(token), email, 21600);
+  return { ok:true, token, email };
+}
+function logoutAdmin(token) { if (token) CacheService.getScriptCache().remove(adminTokenKey_(token)); return { ok:true }; }
+function currentUser_(token) {
+  const email = String(adminSessionEmail_(token) || Session.getActiveUser().getEmail() || '').trim().toLowerCase();
+  return { email, isAdmin:isActiveUser_(email, ['admin','管理員']), isPrintStaff:isActiveUser_(email, ['designer','print_staff','設計人員','印務人員']) };
+}
+function requireAdmin_(token) {
+  const user = currentUser_(token);
+  if (!user.isAdmin) throw new Error('請先以已啟用的管理員帳號登入。');
   return user;
 }
 
-function requirePrintStaff_() {
-  const user = currentUser_();
+function requirePrintStaff_(adminToken) {
+  const user = currentUser_(adminToken);
   const isStaff = readRows_('Users').some(row => {
     const email = String(row.email || '').trim().toLowerCase();
     const role = String(row.role || '').trim().toLowerCase();
@@ -91,8 +133,8 @@ function requirePrintStaff_() {
   return user;
 }
 
-function getBootstrap() {
-  const user = currentUser_();
+function getBootstrap(adminToken) {
+  const user = currentUser_(adminToken);
   const requests = readRows_('Requests');
   return { user, rooms: getRooms_(), statuses: APP.statuses, requests, isAdmin: user.isAdmin };
 }
@@ -126,8 +168,8 @@ function createRequest(payload) {
 }
 
 function reviewRequest(payload) {
-  const admin = requireAdmin_();
   const p = payload || {};
+  const admin = requireAdmin_(p.adminToken);
   const action = String(p.action || '');
   if (!['approve','reject','status'].includes(action)) throw new Error('無效的審核動作。');
   const lock = LockService.getScriptLock(); lock.waitLock(10000);
@@ -148,8 +190,8 @@ function reviewRequest(payload) {
   } finally { lock.releaseLock(); }
 }
 
-function getReviewHistory(requestId) {
-  const user = currentUser_();
+function getReviewHistory(requestId, adminToken) {
+  const user = currentUser_(adminToken);
   const request = readRows_('Requests').find(r => String(r.id) === String(requestId));
   if (!request) throw new Error('找不到這筆需求。');
   if (!user.isAdmin && String(request.requesterEmail).toLowerCase() !== user.email) throw new Error('沒有權限查看此紀錄。');
@@ -158,8 +200,8 @@ function getReviewHistory(requestId) {
 
 /** Save the final artwork link added by print staff after a request is submitted. */
 function saveProductionArtwork(payload) {
-  const admin = requireAdmin_();
   const p = payload || {};
+  const admin = requireAdmin_(p.adminToken);
   const url = String(p.url || '').trim();
   if (url && !/^https:\/\/(drive|docs)\.google\.com\//.test(url)) throw new Error('完稿連結請使用 Google Drive 或 Google 文件網址。');
   const lock = LockService.getScriptLock(); lock.waitLock(10000);
@@ -185,8 +227,29 @@ function saveProductionArtwork(payload) {
 }
 
 /** Upload a new artwork version. Active print/design staff can edit; requester and admin can view. */
+/** Save a Drive link from an enabled print/design staff member or authenticated admin. */
+function savePrintStaffArtworkLink(payload) {
+  const p = payload || {}, user = currentUser_(p.adminToken);
+  const isStaff = isActiveUser_(user.email, ['designer','print_staff','設計人員','印務人員']);
+  if (!isStaff && !user.isAdmin) throw new Error('只有已啟用的印務／設計人員或管理員可以新增完稿連結。');
+  const requestId = safe_(p.requestId, 100), url = String(p.url || '').trim();
+  if (!requestId || !url) throw new Error('請填寫完稿連結。');
+  if (!(url.startsWith('https://drive.google.com/') || url.startsWith('https://docs.google.com/'))) throw new Error('完稿連結請使用 Google Drive 或 Google 文件網址。');
+  const sheet = getSheet_('Requests'), values = sheet.getDataRange().getValues(), headers = values[0].map(String);
+  const idCol = headers.indexOf('id'), linkCol = headers.indexOf('productionArtworkUrl');
+  const rowIndex = values.findIndex((row, i) => i > 0 && String(row[idCol]) === requestId);
+  if (rowIndex < 1) throw new Error('找不到這筆需求。');
+  if (linkCol < 0) throw new Error('找不到完稿連結欄位，請先初始化資料表。');
+  const now = new Date().toISOString();
+  sheet.getRange(rowIndex + 1, linkCol + 1).setValue(url);
+  const updatedCol = headers.indexOf('updatedAt');
+  if (updatedCol >= 0) sheet.getRange(rowIndex + 1, updatedCol + 1).setValue(now);
+  logReview_(requestId, user.email, '印務人員新增完稿連結', '');
+  return { ok:true, url };
+}
+
 function uploadProductionArtwork(form) {
-  const user = requirePrintStaff_();
+  const user = requirePrintStaff_(form && form.adminToken);
   const requestId = safe_(form && form.requestId, 100);
   const blob = form && form.artworkFile;
   if (!requestId || !blob || !blob.getBytes) throw new Error('請選擇完稿檔案。');
@@ -210,7 +273,12 @@ function uploadProductionArtwork(form) {
   const version = readRows_('ArtworkFiles').filter(row => String(row.requestId) === requestId).length + 1;
   const fileName = `${requestId}_v${version}_${originalName}`;
   const file = folder.createFile(blob.setName(fileName));
-  const recipients = [...new Set([String(request.requesterEmail || '').trim().toLowerCase(), APP.adminEmail].filter(email => email && email !== user.email))];
+  const adminEmails = readRows_('Users').filter(row => {
+    const role = String(row.role || '').trim().toLowerCase();
+    const active = row.active === true || String(row.active || '').trim().toUpperCase() === 'TRUE';
+    return active && ['admin','管理員'].includes(role);
+  }).map(row => String(row.email || '').trim().toLowerCase());
+  const recipients = [...new Set([String(request.requesterEmail || '').trim().toLowerCase(), ...adminEmails].filter(email => email && email !== user.email))];
   const shareWarnings = [];
   recipients.forEach(email => { try { file.addViewer(email); } catch (e) { shareWarnings.push(email); } });
   const staffEditors = [...new Set(readRows_('Users')
