@@ -4,7 +4,7 @@ const APP = {
   rooms: ['J103', 'J101A', 'J101B', 'J104（系辦教室）', '其他'],
   statuses: ['待審核', '待製作', '製作中', '待取件', '已完成', '退件'],
   sheets: {
-    Requests: ['id','createdAt','updatedAt','requesterEmail','requesterName','room','title','category','size','quantity','neededBy','deadline','description','driveUrl','status','reviewNote','reviewedBy','reviewedAt'],
+    Requests: ['id','createdAt','updatedAt','requesterEmail','requesterName','room','title','category','size','quantity','neededBy','deadline','description','driveUrl','referenceUrl','status','reviewNote','reviewedBy','reviewedAt'],
     ReviewLogs: ['id','requestId','at','reviewer','action','note'],
     Users: ['email','name','role','active'],
     Settings: ['key','value'],
@@ -27,6 +27,11 @@ function initializeDatabase() {
     let sheet = ss.getSheetByName(name);
     if (!sheet) sheet = ss.insertSheet(name);
     if (sheet.getLastRow() === 0) sheet.appendRow(headers);
+    else {
+      const currentHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
+      const missingHeaders = headers.filter(header => !currentHeaders.includes(header));
+      if (missingHeaders.length) sheet.getRange(1, currentHeaders.length + 1, 1, missingHeaders.length).setValues([missingHeaders]);
+    }
     sheet.setFrozenRows(1);
   });
   const users = ss.getSheetByName('Users');
@@ -86,7 +91,7 @@ function createRequest(payload) {
   try {
     const now = new Date().toISOString();
     const id = 'PL-' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyMMdd') + '-' + Utilities.getUuid().slice(0,5).toUpperCase();
-    appendObject_('Requests', { id, createdAt:now, updatedAt:now, requesterEmail:user.email, requesterName:safe_(p.requesterName,80), room:p.room, title:safe_(p.title,120), category:safe_(p.category,60), size:safe_(p.size,80), quantity:p.quantity, neededBy:p.neededBy, deadline:p.deadline, description:safe_(p.description,1000), driveUrl:p.driveUrl, status:'待審核', reviewNote:'', reviewedBy:'', reviewedAt:'' });
+    appendObject_('Requests', { id, createdAt:now, updatedAt:now, requesterEmail:user.email, requesterName:safe_(p.requesterName,80), room:p.room, title:safe_(p.title,120), category:safe_(p.category,60), size:safe_(p.size,80), quantity:p.quantity, neededBy:p.neededBy, deadline:p.deadline, description:safe_(p.description,1000), driveUrl:p.driveUrl, referenceUrl:p.referenceUrl, status:'待審核', reviewNote:'', reviewedBy:'', reviewedAt:'' });
     logReview_(id, user.email, '提交需求', '');
     return { ok:true, id };
   } finally { lock.releaseLock(); }
@@ -133,9 +138,11 @@ function validateRequest_(p) {
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10000) throw new Error('數量需為 1 至 10,000 的整數。');
   const driveUrl = String(p.driveUrl || '').trim();
   if (driveUrl && !/^https:\/\/(drive|docs)\.google\.com\//.test(driveUrl)) throw new Error('檔案連結請使用 Google Drive 或 Google 文件網址。');
+  const referenceUrl = String(p.referenceUrl || '').trim();
+  if (referenceUrl && !/^https:\/\/(drive|docs)\.google\.com\//.test(referenceUrl)) throw new Error('參考範例請使用 Google Drive 或 Google 文件網址。');
   const neededBy = String(p.neededBy || ''); const deadline = String(p.deadline || '');
   if (!neededBy || !deadline) throw new Error('請填寫需求日期與交件期限。');
-  return { ...p, room, title, quantity, neededBy, deadline, driveUrl };
+  return { ...p, room, title, quantity, neededBy, deadline, driveUrl, referenceUrl };
 }
 
 function readRows_(name) {
@@ -148,11 +155,11 @@ function readRows_(name) {
 }
 
 function appendObject_(name, obj) {
-  const sheet = getDatabase_().getSheetByName(name); const headers = APP.sheets[name];
+  const sheet = getDatabase_().getSheetByName(name); const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
   sheet.appendRow(headers.map(h => obj[h] === undefined ? '' : obj[h]));
 }
 function writeObjectAt_(name, rowNumber, obj) {
-  const sheet = getDatabase_().getSheetByName(name); const headers = APP.sheets[name];
+  const sheet = getDatabase_().getSheetByName(name); const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
   sheet.getRange(rowNumber, 1, 1, headers.length).setValues([headers.map(h => obj[h] === undefined ? '' : obj[h])]);
 }
 function logReview_(requestId, reviewer, action, note) {

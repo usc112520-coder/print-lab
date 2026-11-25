@@ -5,7 +5,7 @@ Responsive print request and classroom setup collaboration portal built with Goo
 ## Included in this first release
 
 - Dashboard with request counts, upcoming deadlines, and room distribution.
-- Request form for J103, J101A, J101B, J104（系辦教室）, and 其他.
+- Request form for J103, J101A, J101B, J104（系辦教室）, and 其他, with separate production notes, final artwork link, and optional reference example link.
 - Search and status/room filters, due date schedule, Google Drive artwork links.
 - Admin review queue, approve/reject decisions, and append-only review history.
 - Server-side authorization: only `usc1125520@g2.usc.edu.tw` can review requests.
@@ -15,7 +15,7 @@ Responsive print request and classroom setup collaboration portal built with Goo
 
 1. Create a private Google spreadsheet named `PRINT LAB｜印刷輸出管理資料庫` in the account that will own the service.
 2. From that spreadsheet choose **Extensions → Apps Script**. Add `Code.gs` and `Index.html` from this repository, and add the `appsscript.json` manifest (enable **Show "appsscript.json" manifest file** in Project Settings if needed).
-3. In Project Settings, set the time zone to `Asia/Taipei`. Run `initializeDatabase` once and approve the requested Sheets permissions. Confirm the five tabs appear. The spreadsheet ID is stored in Script Properties; it is not committed to GitHub.
+3. In Project Settings, set the time zone to `Asia/Taipei`. Run `initializeDatabase` and approve the requested Sheets permissions. It creates the five tabs and appends any newly introduced headers when rerun, without moving existing columns. The spreadsheet ID is stored in Script Properties; it is not committed to GitHub.
 4. In **Deploy → New deployment → Web app**, choose **Execute as: User accessing the web app** and restrict access to the intended audience. Every user must have spreadsheet access for writes to work in this mode.
 5. Deploy and open the `/exec` URL while signed into Google. Authorize the app on first use.
 
