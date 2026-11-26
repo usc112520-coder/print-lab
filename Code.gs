@@ -181,7 +181,7 @@ function reviewRequest(payload) {
     const idx = rows.findIndex((r,i) => i > 0 && String(r[idCol]) === String(p.id));
     if (idx < 1) throw new Error('找不到這筆需求。');
     const row = rows[idx]; const obj = {}; headers.forEach((h,i) => obj[h] = row[i]);
-    const next = action === 'approve' ? '待製作' : action === 'reject' ? '退件' : String(p.status || '');
+    const next = action === 'approve' ? '已完成' : action === 'reject' ? '退件' : String(p.status || '');
     if (!APP.statuses.includes(next)) throw new Error('無效的狀態。');
     const note = safe_(p.note || '', 500);
     obj.status = next; obj.reviewNote = note; obj.reviewedBy = admin.email; obj.reviewedAt = new Date().toISOString(); obj.updatedAt = obj.reviewedAt;
