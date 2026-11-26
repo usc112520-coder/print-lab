@@ -86,7 +86,8 @@ function adminSessionEmail_(token) {
   return email && isActiveUser_(email, ['admin','管理員','designer','print_staff','設計人員','印務人員']) ? email : '';
 }
 
-  email = String(email || '').trim().toLowerCase();
+  function requestAdminLoginCode(email) {
+email = String(email || '').trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('請輸入有效的 Email。');
   const cache = CacheService.getScriptCache(), rateKey = 'PRINTLAB_ADMIN_RATE_' + adminTokenKey_(email);
   if (cache.get(rateKey)) return { ok:true };
@@ -369,3 +370,23 @@ function logReview_(requestId, reviewer, action, note) {
 function safe_(value, max) { return String(value || '').trim().replace(/[<>]/g, '').slice(0, max); }
 
 
+
+
+function verifyAdminPassword(email, password) {
+  email = String(email || '').trim().toLowerCase();
+  password = String(password || '');
+  const configuredPassword = PropertiesService.getScriptProperties().getProperty('ADMIN_PASSWORD');
+  if (!configuredPassword) throw new Error('管理密碼尚未設定，請管理員先在 Apps Script 專案設定新增 ADMIN_PASSWORD。');
+  const cache = CacheService.getScriptCache();
+  const rateKey = 'PRINTLAB_LOGIN_TRIES_' + adminTokenKey_(email);
+  const tries = Number(cache.get(rateKey) || 0);
+  if (tries >= 10) throw new Error('登入嘗試次數過多，請 15 分鐘後再試。');
+  if (!isActiveUser_(email, ['admin', '管理員', 'designer', 'print_staff', '設計人員', '印務人員']) || password !== configuredPassword) {
+    cache.put(rateKey, String(tries + 1), 900);
+    throw new Error('帳號或密碼錯誤，或帳號尚未啟用。');
+  }
+  cache.remove(rateKey);
+  const token = Utilities.getUuid() + Utilities.getUuid();
+  cache.put(adminTokenKey_(token), email, 21600);
+  return { ok: true, token, email, expiresIn: 21600 };
+}
