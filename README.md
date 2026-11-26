@@ -1,5 +1,7 @@
 # 數遊系印務需求系統
 
+> **線上系統入口：[直接開啟數遊系印務需求系統](https://script.google.com/macros/s/AKfycbwnLPZAdrguZIzWd0d9cpm7euQNNn-AGttMAVELanAmHl5VN6atnF-ud06w1RSK5HWw0Q/exec)**
+
 以 Google Apps Script 提供表單與內部作業介面，Google 試算表保存需求資料，GitHub Pages 提供入口頁。本專案不使用 Cloud Run。
 
 ## 功能
