@@ -390,3 +390,32 @@ function verifyAdminPassword(email, password) {
   cache.put(adminTokenKey_(token), email, 21600);
   return { ok: true, token, email, expiresIn: 21600 };
 }
+
+function deleteRequest(payload) {
+  const p = payload || {}, admin = requireAdmin_(p.adminToken), requestId = safe_(p.id, 100);
+  if (!requestId) throw new Error('缺少需求編號。');
+  const lock = LockService.getScriptLock(); lock.waitLock(10000);
+  try {
+    const requestSheet = getSheet_('Requests'), requestValues = requestSheet.getDataRange().getValues();
+    const requestHeaders = requestValues[0].map(String), idCol = requestHeaders.indexOf('id');
+    const rowIndex = requestValues.findIndex((row, i) => i > 0 && String(row[idCol]) === requestId);
+    if (rowIndex < 1) throw new Error('找不到這筆需求。');
+    const artworkSheet = getSheet_('ArtworkFiles'), artworkValues = artworkSheet.getDataRange().getValues();
+    const artworkHeaders = artworkValues.length ? artworkValues[0].map(String) : [];
+    const requestIdCol = artworkHeaders.indexOf('requestId'), fileIdCol = artworkHeaders.indexOf('fileId');
+    const relatedRows = artworkValues.slice(1).map((row, i) => ({ rowNumber:i + 2, row }))
+      .filter(item => requestIdCol >= 0 && String(item.row[requestIdCol]) === requestId);
+    relatedRows.forEach(item => {
+      const fileId = fileIdCol >= 0 ? String(item.row[fileIdCol] || '').trim() : '';
+      if (fileId) {
+        try { DriveApp.getFileById(fileId).setTrashed(true); }
+        catch (e) { throw new Error('相關完稿檔案無法移至垃圾桶，需求尚未刪除。請確認檔案權限後再試。'); }
+      }
+    });
+    relatedRows.reverse().forEach(item => artworkSheet.deleteRow(item.rowNumber));
+    requestSheet.deleteRow(rowIndex + 1);
+    logReview_(requestId, admin.email, '管理員刪除需求', '需求資料與完稿檔案紀錄已移除；雲端硬碟檔案已移至垃圾桶。');
+    return { ok:true };
+  } finally { lock.releaseLock(); }
+}
+
