@@ -195,7 +195,7 @@ function getReviewHistory(requestId, adminToken) {
   const user = currentUser_(adminToken);
   const request = readRows_('Requests').find(r => String(r.id) === String(requestId));
   if (!request) throw new Error('找不到這筆需求。');
-  if (!user.isAdmin && String(request.requesterEmail).toLowerCase() !== user.email) throw new Error('沒有權限查看此紀錄。');
+  if (!user.isAdmin && !user.isPrintStaff && String(request.requesterEmail).toLowerCase() !== user.email) throw new Error('沒有權限查看此紀錄。');
   return readRows_('ReviewLogs').filter(r => String(r.requestId) === String(requestId)).sort((a,b) => String(a.at).localeCompare(String(b.at)));
 }
 
@@ -418,4 +418,3 @@ function deleteRequest(payload) {
     return { ok:true };
   } finally { lock.releaseLock(); }
 }
-
