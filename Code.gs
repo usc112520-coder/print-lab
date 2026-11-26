@@ -85,7 +85,7 @@ function adminSessionEmail_(token) {
   const email = CacheService.getScriptCache().get(adminTokenKey_(token));
   return email && isActiveUser_(email, ['admin','管理員','designer','print_staff','設計人員','印務人員']) ? email : '';
 }
-function requestAdminLoginCode(email) {
+
   email = String(email || '').trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('請輸入有效的 Email。');
   const cache = CacheService.getScriptCache(), rateKey = 'PRINTLAB_ADMIN_RATE_' + adminTokenKey_(email);
