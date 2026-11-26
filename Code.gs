@@ -4,13 +4,14 @@ const APP = {
   rooms: ['J103', 'J101A', 'J101B', 'J104（系辦教室）', '其他'],
   statuses: ['待審核', '待製作', '製作中', '待取件', '已完成', '退件'],
   sheetNames: {
-    Requests: '印務需求', ReviewLogs: '審核紀錄', ArtworkFiles: '完稿檔案',
+    Requests: '印務需求', ReviewLogs: '審核紀錄', ArtworkFiles: '完稿檔案', SharedMaterials: '共用素材',
     Users: '使用者', Settings: '系統設定', Notifications: '通知紀錄'
   },
   sheets: {
     Requests: ['id','createdAt','updatedAt','requesterEmail','requesterName','room','title','category','size','quantity','neededBy','deadline','description','driveUrl','referenceUrl','productionArtworkUrl','status','reviewNote','reviewedBy','reviewedAt'],
     ReviewLogs: ['id','requestId','at','reviewer','action','note'],
     ArtworkFiles: ['id','requestId','fileId','fileName','mimeType','size','version','uploadedBy','uploadedAt','driveUrl'],
+    SharedMaterials: ['id','title','category','description','tags','fileId','fileName','mimeType','size','driveUrl','uploadedBy','uploadedAt','updatedAt'],
     Users: ['email','name','role','active'],
     Settings: ['key','value'],
     Notifications: ['id','requestId','at','recipient','kind','sent']
@@ -138,6 +139,113 @@ function getBootstrap(adminToken) {
   const user = currentUser_(adminToken);
   const requests = readRows_('Requests');
   return { user, rooms: getRooms_(), statuses: APP.statuses, requests, isAdmin: user.isAdmin };
+}
+
+
+/** Create the new materials tab without resetting the existing database binding. */
+function ensureSharedMaterialsSheet_() {
+  const ss = getDatabase_(), name = APP.sheetNames.SharedMaterials;
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) { sheet = ss.insertSheet(name); sheet.appendRow(APP.sheets.SharedMaterials); sheet.setFrozenRows(1); }
+  const targetHeaders = APP.sheets.SharedMaterials;
+  const lastRow = sheet.getLastRow(), lastColumn = sheet.getLastColumn();
+  if (!lastRow || !lastColumn) {
+    sheet.getRange(1, 1, 1, targetHeaders.length).setValues([targetHeaders]);
+    sheet.setFrozenRows(1);
+    return sheet;
+  }
+  const oldHeaders = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0].map(String);
+  const aliases = { url: 'driveUrl', note: 'description', addedBy: 'uploadedBy', addedAt: 'uploadedAt', requestId: 'legacyRequestId' };
+  const normalizedHeaders = oldHeaders.map(h => aliases[h] || h);
+  const unknownHeaders = normalizedHeaders.filter(h => h && !targetHeaders.includes(h));
+  const finalHeaders = [...targetHeaders, ...unknownHeaders.filter((h, i) => unknownHeaders.indexOf(h) === i)];
+  const isAligned = finalHeaders.length === targetHeaders.length && targetHeaders.every((h, i) => oldHeaders[i] === h);
+  if (isAligned) return sheet;
+
+  const oldValues = sheet.getRange(1, 1, lastRow, lastColumn).getValues();
+  const sourceIndexByTarget = {};
+  oldHeaders.forEach((header, index) => {
+    const target = aliases[header] || header;
+    if (target && sourceIndexByTarget[target] === undefined) sourceIndexByTarget[target] = index;
+  });
+  const rows = [finalHeaders];
+  for (let r = 1; r < oldValues.length; r++) {
+    rows.push(finalHeaders.map(header => {
+      const sourceIndex = sourceIndexByTarget[header];
+      if (sourceIndex === undefined) return header === 'category' ? '其他' : '';
+      const value = oldValues[r][sourceIndex];
+      return header === 'updatedAt' && !value && sourceIndexByTarget.uploadedAt !== undefined
+        ? oldValues[r][sourceIndexByTarget.uploadedAt] : value;
+    }));
+  }
+  sheet.getRange(1, 1, rows.length, finalHeaders.length).setValues(rows);
+  sheet.setFrozenRows(1);
+  return sheet;
+}
+
+/** Shared library for active print/design staff. */
+function listSharedMaterials(adminToken) {
+  requirePrintStaff_(adminToken);
+  ensureSharedMaterialsSheet_();
+  return readRows_('SharedMaterials').sort((a,b) => String(b.updatedAt || b.uploadedAt).localeCompare(String(a.updatedAt || a.uploadedAt)));
+}
+
+function addSharedMaterial(form) {
+  const user = requirePrintStaff_(form && form.adminToken);
+  ensureSharedMaterialsSheet_();
+  const title = safe_(form && form.title, 120);
+  const category = safe_(form && form.category || '其他', 40);
+  const description = safe_(form && form.description, 1000);
+  const tags = safe_(form && form.tags, 200);
+  const url = String(form && form.url || '').trim();
+  const blob = form && form.materialFile;
+  if (!title) throw new Error('請填寫素材名稱。');
+  if (!blob && !url) throw new Error('請上傳素材檔案或提供 Google Drive 連結。');
+  if (url && !/^https:\/\/(drive|docs)\.google\.com\//.test(url)) throw new Error('共用素材連結請使用 Google Drive 或 Google 文件網址。');
+  if (blob && blob.getBytes) {
+    const bytes = blob.getBytes();
+    if (!bytes.length || bytes.length > 15 * 1024 * 1024) throw new Error('檔案大小需介於 1 byte 至 15 MB。');
+    const props = PropertiesService.getUserProperties();
+    let folder;
+    const folderId = props.getProperty('PRINT_LAB_SHARED_MATERIALS_FOLDER_ID');
+    if (folderId) { try { folder = DriveApp.getFolderById(folderId); } catch (e) {} }
+    if (!folder) {
+      folder = DriveApp.createFolder('數遊系印務共用素材');
+      props.setProperty('PRINT_LAB_SHARED_MATERIALS_FOLDER_ID', folder.getId());
+    }
+    const staffEmails = [...new Set(readRows_('Users').filter(row => {
+      const role = String(row.role || '').trim().toLowerCase();
+      const active = row.active === true || String(row.active || '').trim().toUpperCase() === 'TRUE';
+      return active && ['admin','管理員','designer','print_staff','設計人員','印務人員'].includes(role);
+    }).map(row => String(row.email || '').trim().toLowerCase()).filter(email => email))];
+    const shareWarnings = [];
+    staffEmails.forEach(email => { try { folder.addEditor(email); } catch (e) { shareWarnings.push(email); } });
+    const filename = safe_(blob.getName() || title, 140);
+    const file = folder.createFile(blob.setName(filename));
+    staffEmails.filter(email => email !== user.email).forEach(email => { try { file.addEditor(email); } catch (e) { if (!shareWarnings.includes(email)) shareWarnings.push(email); } });
+    const now = new Date().toISOString();
+    appendObject_('SharedMaterials', { id:Utilities.getUuid(), title, category, description, tags, fileId:file.getId(), fileName:filename, mimeType:blob.getContentType(), size:bytes.length, driveUrl:file.getUrl(), uploadedBy:user.email, uploadedAt:now, updatedAt:now });
+    return { ok:true, shareWarnings };
+  }
+  const now = new Date().toISOString();
+  appendObject_('SharedMaterials', { id:Utilities.getUuid(), title, category, description, tags, fileId:'', fileName:'', mimeType:'', size:'', driveUrl:url, uploadedBy:user.email, uploadedAt:now, updatedAt:now });
+  return { ok:true, shareWarnings:[] };
+}
+
+function deleteSharedMaterial(payload) {
+  const admin = requireAdmin_(payload && payload.adminToken);
+  ensureSharedMaterialsSheet_();
+  const id = safe_(payload && payload.id, 100);
+  const sheet = getSheet_('SharedMaterials');
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0].map(String);
+  const idCol = headers.indexOf('id'), fileCol = headers.indexOf('fileId');
+  const rowIndex = values.findIndex((row, i) => i > 0 && String(row[idCol]) === id);
+  if (rowIndex < 1) throw new Error('找不到這項共用素材。');
+  const fileId = fileCol >= 0 ? String(values[rowIndex][fileCol] || '') : '';
+  if (fileId) { try { DriveApp.getFileById(fileId).setTrashed(true); } catch (e) { throw new Error('素材檔案無法移至垃圾桶，尚未刪除資料。'); } }
+  sheet.deleteRow(rowIndex + 1);
+  return { ok:true, deletedBy:admin.email };
 }
 
 function listRequests(filters) {
@@ -418,3 +526,4 @@ function deleteRequest(payload) {
     return { ok:true };
   } finally { lock.releaseLock(); }
 }
+
